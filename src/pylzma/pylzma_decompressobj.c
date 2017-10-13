@@ -32,11 +32,12 @@ static int
 pylzma_decomp_init(CDecompressionObject *self, PyObject *args, PyObject *kwargs)
 {
     PY_LONG_LONG max_length = -1;
+    int lzma2 = 0;
     
     // possible keywords for this function
-    static char *kwlist[] = {"maxlength", NULL};
+    static char *kwlist[] = {"maxlength", "lzma2", NULL};
     
-    if (!PyArg_ParseTupleAndKeywords(args, kwargs, "|L", kwlist, &max_length))
+    if (!PyArg_ParseTupleAndKeywords(args, kwargs, "|Li", kwlist, &max_length, &lzma2))
         return -1;
     
     if (max_length == 0 || max_length < -1) {
@@ -49,7 +50,12 @@ pylzma_decomp_init(CDecompressionObject *self, PyObject *args, PyObject *kwargs)
     self->need_properties = 1;
     self->max_length = max_length;
     self->total_out = 0;
-    LzmaDec_Construct(&self->state);
+    self->lzma2 = lzma2;
+    if (self->lzma2 == 1) {
+        Lzma2Dec_Construct(&self->state2);
+    } else {
+        LzmaDec_Construct(&self->state);
+    }
     return 0;
 }
 
@@ -89,7 +95,8 @@ pylzma_decomp_decompress(CDecompressionObject *self, PyObject *args)
     }
     
     if (self->need_properties) {
-        if ((self->unconsumed_length + length) < LZMA_PROPS_SIZE) {
+        int properties_len = self->lzma2 == 1 ? 1 : LZMA_PROPS_SIZE;
+        if ((self->unconsumed_length + length) < properties_len) {
             // we need enough bytes to read the properties
             self->unconsumed_tail = (unsigned char *) realloc(self->unconsumed_tail, self->unconsumed_length + length);
             if (self->unconsumed_tail == NULL) {
@@ -102,14 +109,18 @@ pylzma_decomp_decompress(CDecompressionObject *self, PyObject *args)
         }
 
         self->unconsumed_length += length;
-        res = LzmaDec_Allocate(&self->state, next_in, LZMA_PROPS_SIZE, &allocator);
+        if (self->lzma2 == 1) {
+            res = Lzma2Dec_Allocate(&self->state2, *next_in, &allocator);
+        } else {
+            res = LzmaDec_Allocate(&self->state, next_in, LZMA_PROPS_SIZE, &allocator);
+        }
         if (res != SZ_OK) {
             PyErr_SetString(PyExc_TypeError, "Incorrect stream properties");
             return NULL;
         }
         
-        next_in += LZMA_PROPS_SIZE;
-        self->unconsumed_length -= LZMA_PROPS_SIZE;
+        next_in += properties_len;
+        self->unconsumed_length -= properties_len;
         if (self->unconsumed_length > 0) {
             if (self->unconsumed_tail == NULL) {
                 // No remaining data yet
@@ -122,7 +133,7 @@ pylzma_decomp_decompress(CDecompressionObject *self, PyObject *args)
                 next_in = self->unconsumed_tail;
             } else {
                 // Skip properties in remaining data
-                memmove(self->unconsumed_tail, self->unconsumed_tail+LZMA_PROPS_SIZE, self->unconsumed_length);
+                memmove(self->unconsumed_tail, self->unconsumed_tail+properties_len, self->unconsumed_length);
                 self->unconsumed_tail = next_in = (unsigned char *) realloc(self->unconsumed_tail, self->unconsumed_length);
                 if (self->unconsumed_tail == NULL) {
                     PyErr_NoMemory();
@@ -134,7 +145,11 @@ pylzma_decomp_decompress(CDecompressionObject *self, PyObject *args)
         }
         
         self->need_properties = 0;
-        LzmaDec_Init(&self->state);
+        if (self->lzma2 == 1) {
+            Lzma2Dec_Init(&self->state2);
+        } else {
+            LzmaDec_Init(&self->state);
+        }
     } else {
         self->unconsumed_length += length;
     }
@@ -155,8 +170,13 @@ pylzma_decomp_decompress(CDecompressionObject *self, PyObject *args)
     // Decompress until EOS marker is reached
     inProcessed = avail_in;
     outProcessed = bufsize;
-    res = LzmaDec_DecodeToBuf(&self->state, next_out, &outProcessed,
+    if (self->lzma2 == 1) {
+        res = Lzma2Dec_DecodeToBuf(&self->state2, next_out, &outProcessed,
                     next_in, &inProcessed, LZMA_FINISH_ANY, &status);
+    } else {
+        res = LzmaDec_DecodeToBuf(&self->state, next_out, &outProcessed,
+                    next_in, &inProcessed, LZMA_FINISH_ANY, &status);
+    }
     Py_END_ALLOW_THREADS
     self->total_out += outProcessed;
     next_in += inProcessed;
@@ -233,14 +253,24 @@ pylzma_decomp_flush(CDecompressionObject *self, PyObject *args)
             // No remaining data
             inProcessed = 0;
             outProcessed = avail_out;
-            res = LzmaDec_DecodeToBuf(&self->state, tmp, &outProcessed,
+            if (self->lzma2 == 1) {
+                res = Lzma2Dec_DecodeToBuf(&self->state2, tmp, &outProcessed,
                             (Byte *) "", &inProcessed, LZMA_FINISH_ANY, &status);
+            } else {
+                res = LzmaDec_DecodeToBuf(&self->state, tmp, &outProcessed,
+                            (Byte *) "", &inProcessed, LZMA_FINISH_ANY, &status);
+            }
         } else {
             // Decompress remaining data
             inProcessed = self->unconsumed_length;
             outProcessed = avail_out;
-            res = LzmaDec_DecodeToBuf(&self->state, tmp, &outProcessed,
+            if (self->lzma2 == 1) {
+                res = Lzma2Dec_DecodeToBuf(&self->state2, tmp, &outProcessed,
                             self->unconsumed_tail, &inProcessed, LZMA_FINISH_ANY, &status);
+            } else {
+                res = LzmaDec_DecodeToBuf(&self->state, tmp, &outProcessed,
+                            self->unconsumed_tail, &inProcessed, LZMA_FINISH_ANY, &status);
+            }
             self->unconsumed_length -= inProcessed;
             if (self->unconsumed_length > 0)
                 memmove(self->unconsumed_tail, self->unconsumed_tail + inProcessed, self->unconsumed_length);
@@ -300,20 +330,29 @@ static PyObject *
 pylzma_decomp_reset(CDecompressionObject *self, PyObject *args, PyObject *kwargs)
 {
     PY_LONG_LONG max_length = -1;
+    int lzma2 = 0;
     
     // possible keywords for this function
-    static char *kwlist[] = {"maxlength", NULL};
+    static char *kwlist[] = {"maxlength", "lzma2", NULL};
     
-    if (!PyArg_ParseTupleAndKeywords(args, kwargs, "|L", kwlist, &max_length))
+    if (!PyArg_ParseTupleAndKeywords(args, kwargs, "|Li", kwlist, &max_length, &lzma2))
         return NULL;
-    
-    LzmaDec_Free(&self->state, &allocator);
-    LzmaDec_Construct(&self->state);
+    if (self->lzma2 == 1) {
+        Lzma2Dec_Free(&self->state2, &allocator);
+    } else {
+        LzmaDec_Free(&self->state, &allocator);
+    }
+    if (lzma2 == 1) {
+        Lzma2Dec_Construct(&self->state2);
+    } else {
+        LzmaDec_Construct(&self->state);
+    }
     FREE_AND_NULL(self->unconsumed_tail);
     self->unconsumed_length = 0;
     self->need_properties = 1;
     self->total_out = 0;
     self->max_length = max_length;
+    self->lzma2 = lzma2;
     
     Py_INCREF(Py_None);
     return Py_None;
@@ -331,7 +370,11 @@ pylzma_decomp_methods[] = {
 static void
 pylzma_decomp_dealloc(CDecompressionObject *self)
 {
-    LzmaDec_Free(&self->state, &allocator);
+    if (self->lzma2 == 1) {
+        Lzma2Dec_Free(&self->state2, &allocator);
+    } else {
+        LzmaDec_Free(&self->state, &allocator);
+    }
     FREE_AND_NULL(self->unconsumed_tail);
     Py_TYPE(self)->tp_free((PyObject*) self);
 }

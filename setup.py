@@ -129,6 +129,7 @@ macros = [
     ('PY_SSIZE_T_CLEAN', 1),
 ]
 lzma_files = ('src/sdk/C/LzFind.c', 'src/sdk/C/LzmaDec.c', 'src/sdk/C/LzmaEnc.c', \
+    'src/sdk/C/Lzma2Dec.c', 'src/sdk/C/Lzma2Enc.c', 'src/sdk/C/MtCoder.c', \
     'src/sdk/C/CpuArch.c', 'src/sdk/C/Aes.c', 'src/sdk/C/AesOpt.c', \
     'src/sdk/C/Sha256.c', 'src/sdk/C/Bra.c', 'src/sdk/C/Bra86.c', \
     'src/sdk/C/BraIA64.c')

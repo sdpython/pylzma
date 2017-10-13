@@ -135,6 +135,7 @@ PROPERTY_DUMMY                   = unhexlify('19')  # '\x19'
 
 COMPRESSION_METHOD_COPY          = unhexlify('00')  # '\x00'
 COMPRESSION_METHOD_LZMA          = unhexlify('03')  # '\x03'
+COMPRESSION_METHOD_LZMA2         = unhexlify('21')  # '\x21'
 COMPRESSION_METHOD_CRYPTO        = unhexlify('06')  # '\x06'
 COMPRESSION_METHOD_MISC          = unhexlify('04')  # '\x04'
 COMPRESSION_METHOD_MISC_ZIP      = unhexlify('0401')  # '\x04\x01'
@@ -584,6 +585,7 @@ class ArchiveFile(Base):
         self._decoders = {
             COMPRESSION_METHOD_COPY: '_read_copy',
             COMPRESSION_METHOD_LZMA: '_read_lzma',
+            COMPRESSION_METHOD_LZMA2: '_read_lzma2',
             COMPRESSION_METHOD_MISC_ZIP: '_read_zip',
             COMPRESSION_METHOD_MISC_BZIP: '_read_bzip',
             COMPRESSION_METHOD_7Z_AES256_SHA256: '_read_7z_aes256_sha256',
@@ -673,6 +675,17 @@ class ArchiveFile(Base):
     def _read_lzma(self, coder, input, level):
         size = self._uncompressed[level]
         dec = pylzma.decompressobj(maxlength=self._start+size)
+        try:
+            return self._read_from_decompressor(coder, dec, input, level, checkremaining=True, with_cache=True)
+        except ValueError:
+            if self._is_encrypted():
+                raise WrongPasswordError('invalid password')
+            
+            raise
+            
+    def _read_lzma2(self, coder, input, level):
+        size = self._uncompressed[level]
+        dec = pylzma.decompressobj(maxlength=self._start+size, lzma2=1)
         try:
             return self._read_from_decompressor(coder, dec, input, level, checkremaining=True, with_cache=True)
         except ValueError:
