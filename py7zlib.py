@@ -31,6 +31,7 @@ import pylzma
 from struct import pack, unpack
 from zlib import crc32
 from pprint import pprint
+from pprint import pformat
 import zlib
 import bz2
 import os
@@ -596,7 +597,7 @@ class ArchiveFile(Base):
             else:
                 self.filename = os.path.splitext(os.path.basename(basefilename))[0]
         self.reset()
-        print('File: %s %x %x %x' % (self.filename, self._src_start, self._start, self.size))
+        #print('File: %s %x %x %x' % (self.filename, self._src_start, self._start, self.size))
 
     def _is_encrypted(self):
         return self._folder.isEncrypted()
@@ -612,7 +613,6 @@ class ArchiveFile(Base):
         level = 0
         if len(self._folder.coders) > 1:
             c = [x['method'] for x in self._folder.coders]
-            from pprint import pformat
             print ("  Multiple Coders: " + pformat(c))
             
         for coder in self._folder.coders:
@@ -641,6 +641,7 @@ class ArchiveFile(Base):
         cnt = 0
         properties = coder.get('properties', None)
         if properties:
+            #print('Properties: %s' % pformat(properties))
             decompressor.decompress(properties)
         total = self.compressed
         if not input and total is None:
@@ -712,8 +713,8 @@ class ArchiveFile(Base):
         return self._read_from_decompressor(coder, dec, input, level)
     
     def _read_bcj(self, coder, input, level):
-        dec = pylzma.bcjdecobj(maxlength=self._start+self._uncompressed[level])
-        return self._read_from_decompressor(coder, dec, input, level)
+        dec = BCJDecoder()
+        return self._read_from_decompressor(coder, dec, input, level, checkremaining=True)
         
     
     def _read_7z_aes256_sha256(self, coder, input, level):
@@ -936,7 +937,107 @@ class Archive7z(Base):
         for f in self.files:
             extra = (f.compressed and '%10d ' % (f.compressed)) or ' '
             file.write('%10d%s%.8x %s\n' % (f.size, extra, f.digest, f.filename))
+         
+# BCJ is a pre-processor for executables created by Igor Pavlov (7zip author) I THINK.
+# I have not been able to track down ANY actual docmentation on this. But I have been able to find some code.
+# From the look of it, it converts relative jumps in a EXE file into explicit calls. This helps create redundant data that other compression 
+# mechanics can exploit to make a smaller end file.
+# Converted from java: https://github.com/openlogic/j7zip-extractor/blob/master/src/SevenZip/Compression/Branch/BCJ_x86_Decoder.java         
+class BCJDecoder():
+    def __init__(self, arch='x86'):
+        self._prevMask = [0]
+        self._prevPos = [0]
+        self._bufferPos = 0
+        self._extra = None
+        self.kMaskToAllowedStatus = [True, True, True, False, True, False, False, False]
+        self.kMaskToBitNumber = [0, 1, 2, 2, 3, 3, 3, 3]
+        if 'x86' == arch:
+            self._prevMask[0] = 0
+            self._prevPos[0] = -5
             
+        
+    def x86_Convert(self, buffer, endPos, nowPos, encoding):
+        def test86MSByte(b):
+            return b == 0 or b == 0xFF;
+        def rshift(val, n): # Python doesn't have logical shift..
+            return val >> n if val >= 0 else (val + 0x100000000) >> n
+            
+        bufferPos = 0
+        limit = 0
+        
+        if endPos < 5:
+            return 0
+            
+        if nowPos - self._prevPos[0] > 5:
+            self._prevPos[0] = nowPos - 5
+        
+        limit = endPos - 5
+        while bufferPos <= limit:
+            b = buffer[bufferPos] & 0xFF
+            
+            if b != 0xE8 and b != 0xE9: #CALL or JUMP
+                bufferPos += 1
+                continue
+                
+            offset = nowPos + bufferPos - self._prevPos[0]
+            self._prevPos[0] = nowPos + bufferPos
+            if offset > 5:
+                self._prevMask[0] = 0
+            else:
+                for i in range(0, offset):
+                    self._prevMask[0] &= 0x77
+                    self._prevMask[0] <<= 1
+            
+            b = buffer[bufferPos + 4] & 0xFF
+            if test86MSByte(b) and self.kMaskToAllowedStatus[(self._prevMask[0] >> 1) & 0x07] and rshift(self._prevMask[0], 1) < 0x10:
+                src = b << 24 | ((buffer[bufferPos + 3] & 0xFF) << 16) | ((buffer[bufferPos + 2] & 0xFF) << 8) | (buffer[bufferPos + 1] & 0xFF)
+                
+                dest = 0
+                while True:
+                    if encoding:
+                        dest = (nowPos + bufferPos + 5) + src
+                    else:
+                        dest = src - (nowPos + bufferPos + 5)
+                    if self._prevMask[0] == 0:
+                        break
+                    index = self.kMaskToBitNumber[rshift(self._prevMask[0], 1)]
+                    b = (dest >> (24 - index * 8)) & 0xFF
+                    if not test86MSByte(b):
+                        break
+                    src = dest ^ ((1 << (32 - index * 8)) -1)
+                buffer[bufferPos + 4] = (~(((dest >> 24) & 1) - 1)) & 0xFF
+                buffer[bufferPos + 3] = (dest >> 16) & 0xFF
+                buffer[bufferPos + 2] = (dest >> 8) & 0xFF
+                buffer[bufferPos + 1] = dest & 0xFF
+                bufferPos += 5
+                self._prevMask[0] = 0
+            else:
+                bufferPos += 1
+                self._prevMask[0] |= 1
+                if test86MSByte(b):
+                    self._prevMask[0] |= 0x10
+            
+        return bufferPos
+            
+    def decompress(self, data, size=READ_BLOCKSIZE):
+        data = bytearray(data)
+        #We are doing a second pass in this... we should never be called multiple times?
+        #Lets throw an error if we are.
+        if self._bufferPos > 0:
+            raise Exception('BCJ decoder called multiple times...')
+        #if not self._extra is None:
+        #    data = self._extra + data
+        #    size += len(self._extra)
+        #    self._extra = None
+        
+        processedSize = self.x86_Convert(data, size, self._bufferPos, False)
+        self._bufferPos += processedSize
+        #if processedSize < len(data):
+        #    self._extra = data[processedSize+1:]
+        return data #[:processedSize]
+        
+        
+    
 if __name__ == '__main__':
     f = Archive7z(open('test.7z', 'rb'))
     #f = Archive7z(open('pylzma.7z', 'rb'))
