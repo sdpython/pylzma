@@ -625,7 +625,10 @@ class ArchiveFile(Base):
             data = getattr(self, '_read_' + decoder)(coder, data, level)
             level += 1
         
-        return data
+        if len(data) < self._start + self.size:
+            raise ValueError('Unable to compress full file data: Expected %x got %x' % (self._start + self.size, len(data)))
+        
+        return data[self._start:self._start+self.size]
     
     def _read_copy(self, coder, input, level):
         size = self._uncompressed[level]
@@ -680,7 +683,8 @@ class ArchiveFile(Base):
                 data = decompressor.decompress(input, self._start+size)
             else:
                 data = decompressor.decompress(input)
-        return data[self._start:self._start+size]
+        #print('Data: %x %x %x' % (self._start, size, len(data)))
+        return data
     
     def _read_lzma(self, coder, input, level):
         size = self._uncompressed[level]
@@ -690,7 +694,6 @@ class ArchiveFile(Base):
         except ValueError:
             if self._is_encrypted():
                 raise WrongPasswordError('invalid password')
-            
             raise
             
     def _read_lzma2(self, coder, input, level):
@@ -701,7 +704,6 @@ class ArchiveFile(Base):
         except ValueError:
             if self._is_encrypted():
                 raise WrongPasswordError('invalid password')
-            
             raise
         
     def _read_zip(self, coder, input, level):
@@ -945,17 +947,16 @@ class Archive7z(Base):
 # Converted from java: https://github.com/openlogic/j7zip-extractor/blob/master/src/SevenZip/Compression/Branch/BCJ_x86_Decoder.java         
 class BCJDecoder():
     def __init__(self, arch='x86'):
-        self._prevMask = [0]
-        self._prevPos = [0]
+        self._prevMask = 0
+        self._prevPos = 0
         self._bufferPos = 0
         self._extra = None
         self.kMaskToAllowedStatus = [True, True, True, False, True, False, False, False]
         self.kMaskToBitNumber = [0, 1, 2, 2, 3, 3, 3, 3]
         if 'x86' == arch:
-            self._prevMask[0] = 0
-            self._prevPos[0] = -5
+            self._prevMask = 0
+            self._prevPos = -5
             
-        
     def x86_Convert(self, buffer, endPos, nowPos, encoding):
         def test86MSByte(b):
             return b == 0 or b == 0xFF;
@@ -968,8 +969,8 @@ class BCJDecoder():
         if endPos < 5:
             return 0
             
-        if nowPos - self._prevPos[0] > 5:
-            self._prevPos[0] = nowPos - 5
+        if nowPos - self._prevPos > 5:
+            self._prevPos = nowPos - 5
         
         limit = endPos - 5
         while bufferPos <= limit:
@@ -979,17 +980,17 @@ class BCJDecoder():
                 bufferPos += 1
                 continue
                 
-            offset = nowPos + bufferPos - self._prevPos[0]
-            self._prevPos[0] = nowPos + bufferPos
+            offset = nowPos + bufferPos - self._prevPos
+            self._prevPos = nowPos + bufferPos
             if offset > 5:
-                self._prevMask[0] = 0
+                self._prevMask = 0
             else:
                 for i in range(0, offset):
-                    self._prevMask[0] &= 0x77
-                    self._prevMask[0] <<= 1
+                    self._prevMask &= 0x77
+                    self._prevMask <<= 1
             
             b = buffer[bufferPos + 4] & 0xFF
-            if test86MSByte(b) and self.kMaskToAllowedStatus[(self._prevMask[0] >> 1) & 0x07] and rshift(self._prevMask[0], 1) < 0x10:
+            if test86MSByte(b) and self.kMaskToAllowedStatus[(self._prevMask >> 1) & 0x07] and rshift(self._prevMask, 1) < 0x10:
                 src = b << 24 | ((buffer[bufferPos + 3] & 0xFF) << 16) | ((buffer[bufferPos + 2] & 0xFF) << 8) | (buffer[bufferPos + 1] & 0xFF)
                 
                 dest = 0
@@ -998,9 +999,9 @@ class BCJDecoder():
                         dest = (nowPos + bufferPos + 5) + src
                     else:
                         dest = src - (nowPos + bufferPos + 5)
-                    if self._prevMask[0] == 0:
+                    if self._prevMask == 0:
                         break
-                    index = self.kMaskToBitNumber[rshift(self._prevMask[0], 1)]
+                    index = self.kMaskToBitNumber[rshift(self._prevMask, 1)]
                     b = (dest >> (24 - index * 8)) & 0xFF
                     if not test86MSByte(b):
                         break
@@ -1010,12 +1011,12 @@ class BCJDecoder():
                 buffer[bufferPos + 2] = (dest >> 8) & 0xFF
                 buffer[bufferPos + 1] = dest & 0xFF
                 bufferPos += 5
-                self._prevMask[0] = 0
+                self._prevMask = 0
             else:
                 bufferPos += 1
-                self._prevMask[0] |= 1
+                self._prevMask |= 1
                 if test86MSByte(b):
-                    self._prevMask[0] |= 0x10
+                    self._prevMask |= 0x10
             
         return bufferPos
             
