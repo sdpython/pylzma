@@ -122,7 +122,7 @@ that has been compressed or can be decompressed by the LZMA library by Igor Pavl
 modules = ['py7zlib']
 c_files = ['src/pylzma/pylzma.c', 'src/pylzma/pylzma_decompressobj.c', 'src/pylzma/pylzma_compressfile.c',
            'src/pylzma/pylzma_decompress.c', 'src/pylzma/pylzma_compress.c', 'src/pylzma/pylzma_streams.c', \
-           'src/pylzma/pylzma_aes.c']
+           'src/pylzma/pylzma_aes.c', 'src/pylzma/pylzma_bcjdecobj.c']
 compile_args = []
 link_args = []
 macros = [
@@ -132,7 +132,7 @@ lzma_files = ('src/sdk/C/LzFind.c', 'src/sdk/C/LzmaDec.c', 'src/sdk/C/LzmaEnc.c'
     'src/sdk/C/Lzma2Dec.c', 'src/sdk/C/Lzma2Enc.c', 'src/sdk/C/MtCoder.c', \
     'src/sdk/C/CpuArch.c', 'src/sdk/C/Aes.c', 'src/sdk/C/AesOpt.c', \
     'src/sdk/C/Sha256.c', 'src/sdk/C/Bra.c', 'src/sdk/C/Bra86.c', \
-    'src/sdk/C/BraIA64.c')
+    'src/sdk/C/BraIA64.c', 'src/sdk/C/Bcj2.c')
 if ENABLE_COMPATIBILITY:
     c_files += ('src/pylzma/pylzma_decompress_compat.c', 'src/pylzma/pylzma_decompressobj_compat.c', )
     lzma_files += ('src/compat/LzmaCompatDecode.c', )

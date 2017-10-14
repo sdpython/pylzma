@@ -30,6 +30,7 @@ from datetime import datetime
 import pylzma
 from struct import pack, unpack
 from zlib import crc32
+from pprint import pprint
 import zlib
 import bz2
 import os
@@ -133,14 +134,27 @@ PROPERTY_ENCODED_HEADER          = unhexlify('17')  # '\x17'
 PROPERTY_START_POS               = unhexlify('18')  # '\x18'
 PROPERTY_DUMMY                   = unhexlify('19')  # '\x19'
 
-COMPRESSION_METHOD_COPY          = unhexlify('00')  # '\x00'
-COMPRESSION_METHOD_LZMA          = unhexlify('03')  # '\x03'
-COMPRESSION_METHOD_LZMA2         = unhexlify('21')  # '\x21'
-COMPRESSION_METHOD_CRYPTO        = unhexlify('06')  # '\x06'
-COMPRESSION_METHOD_MISC          = unhexlify('04')  # '\x04'
+COMPRESSION_METHODS = {
+  unhexlify('00'):       'copy',
+  unhexlify('21'):       'lzma2',
+  #unhexlify('03'):       'delta',
+  unhexlify('030101'):   'lzma',
+  unhexlify('03030103'): 'bcj',
+  #unhexlify('0303011b'): 'bcj2',
+  #unhexlify('03030205'): 'ppc',
+  #unhexlify('03030401'): 'ia64',
+  #unhexlify('03030501'): 'arm',
+  #unhexlify('03030701'): 'armt',
+  #unhexlify('03030805'): 'sparc',
+  unhexlify('06f10701'): '7z_aes256_sha256',
+  '': ''
+}
+  
+#COMPRESSION_METHOD_MISC          = unhexlify('04')  # '\x04'
 COMPRESSION_METHOD_MISC_ZIP      = unhexlify('0401')  # '\x04\x01'
 COMPRESSION_METHOD_MISC_BZIP     = unhexlify('0402')  # '\x04\x02'
-COMPRESSION_METHOD_7Z_AES256_SHA256 = unhexlify('06f10701')  # '\x06\xf1\x07\x01'
+#COMPRESSION_METHOD_CRYPTO        = unhexlify('06')  # '\x06'
+COMPRESSION_METHOD_7Z_AES256_SHA256 = unhexlify('06f10701') # '\x06\xf1\x07\x01'
 
 # number of seconds between 1601/01/01 and 1970/01/01 (UTC)
 # used to adjust 7z FILETIME to Python timestamp
@@ -582,14 +596,7 @@ class ArchiveFile(Base):
             else:
                 self.filename = os.path.splitext(os.path.basename(basefilename))[0]
         self.reset()
-        self._decoders = {
-            COMPRESSION_METHOD_COPY: '_read_copy',
-            COMPRESSION_METHOD_LZMA: '_read_lzma',
-            COMPRESSION_METHOD_LZMA2: '_read_lzma2',
-            COMPRESSION_METHOD_MISC_ZIP: '_read_zip',
-            COMPRESSION_METHOD_MISC_BZIP: '_read_bzip',
-            COMPRESSION_METHOD_7Z_AES256_SHA256: '_read_7z_aes256_sha256',
-        }
+        print('File: %s %x %x %x' % (self.filename, self._src_start, self._start, self.size))
 
     def _is_encrypted(self):
         return self._folder.isEncrypted()
@@ -603,17 +610,19 @@ class ArchiveFile(Base):
         
         data = None
         level = 0
+        if len(self._folder.coders) > 1:
+            c = [x['method'] for x in self._folder.coders]
+            from pprint import pformat
+            print ("  Multiple Coders: " + pformat(c))
+            
         for coder in self._folder.coders:
             method = coder['method']
-            decoder = None
-            while method and decoder is None:
-                decoder = self._decoders.get(method, None)
-                method = method[:-1]
+            decoder = COMPRESSION_METHODS.get(method, None)
             
             if decoder is None:
-                raise UnsupportedCompressionMethodError(repr(coder['method']))
+                raise UnsupportedCompressionMethodError('%s Level: %d' % (repr(method), level))
             
-            data = getattr(self, decoder)(coder, data, level)
+            data = getattr(self, '_read_' + decoder)(coder, data, level)
             level += 1
         
         return data
@@ -701,6 +710,11 @@ class ArchiveFile(Base):
     def _read_bzip(self, coder, input, level):
         dec = bz2.BZ2Decompressor()
         return self._read_from_decompressor(coder, dec, input, level)
+    
+    def _read_bcj(self, coder, input, level):
+        dec = pylzma.bcjdecobj(maxlength=self._start+self._uncompressed[level])
+        return self._read_from_decompressor(coder, dec, input, level)
+        
     
     def _read_7z_aes256_sha256(self, coder, input, level):
         if not self._archive.password:
@@ -805,6 +819,7 @@ class Archive7z(Base):
                 info = {
                     'compressed': streams.packinfo.packsizes[0],
                     '_uncompressed': uncompressed,
+                    '_packsizes': streams.packinfo.packsizes
                 }
                 tmp = ArchiveFile(info, 0, src_start, folder, self)
                 uncompressed_size = uncompressed[-1]
@@ -873,6 +888,7 @@ class Archive7z(Base):
                 # file is not compressed
                 info['compressed'] = uncompressed
             info['_uncompressed'] = uncompressed
+            info['_packsizes'] = packinfo.packsizes
             file = ArchiveFile(info, pos, src_pos, folder, self, maxsize=maxsize)
             if subinfo.digestsdefined[obidx]:
                 file.digest = subinfo.digests[obidx]
