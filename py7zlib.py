@@ -661,7 +661,7 @@ class ArchiveFile(Base):
             checkremaining = checkremaining and not self._folder.solid
             while remaining > 0:
                 data = self._file.read(READ_BLOCKSIZE)
-                if checkremaining or (with_cache and len(data) < READ_BLOCKSIZE):
+                if checkremaining or (with_cache and len(data) < READ_BLOCKSIZE) or remaining < len(data):
                     tmp = decompressor.decompress(data, remaining)
                 else:
                     tmp = decompressor.decompress(data)
