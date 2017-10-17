@@ -105,6 +105,7 @@ else:
     ARRAY_TYPE_UINT32 = 'I'
 
 READ_BLOCKSIZE                   = 16384
+DELTA_STATE_SIZE                 = 256
 
 MAGIC_7Z                         = unhexlify('377abcaf271c')  # '7z\xbc\xaf\x27\x1c'
 
@@ -138,7 +139,7 @@ PROPERTY_DUMMY                   = unhexlify('19')  # '\x19'
 COMPRESSION_METHODS = {
   unhexlify('00'):       'copy',
   unhexlify('21'):       'lzma2',
-  #unhexlify('03'):       'delta',
+  unhexlify('03'):       'delta',
   unhexlify('030101'):   'lzma',
   unhexlify('03030103'): 'bcj',
   #unhexlify('0303011b'): 'bcj2',
@@ -718,7 +719,11 @@ class ArchiveFile(Base):
         dec = BCJDecoder()
         return self._read_from_decompressor(coder, dec, input, level, checkremaining=True)
         
-    
+    def _read_delta(self, coder, input, level):
+        dec = DeltaDecoder()
+        return self._read_from_decompressor(coder, dec, input, level, checkremaining=True)
+        
+        
     def _read_7z_aes256_sha256(self, coder, input, level):
         if not self._archive.password:
             raise NoPasswordGivenError()
@@ -1037,6 +1042,41 @@ class BCJDecoder():
         #    self._extra = data[processedSize+1:]
         return data #[:processedSize]
         
+
+# Converted from the C code, may be a little bit slower but easier to writing the native bridge
+class DeltaDecoder():
+    def __init__(self):
+        self._state = bytearray(DELTA_STATE_SIZE)
+        self._delta = -1
+        
+    def mem_cpy(self, dest, dest_start, src, src_start, size):
+        for i in range(0, size):
+            dest[i + dest_start] = src[i + src_start]
+    
+    def decompress(self, data, size=READ_BLOCKSIZE):
+        data = bytearray(data)
+        length = len(data)
+        
+        start = 0
+        if self._delta == -1:
+            self._delta = (data[0] & 0xFF) + 1
+            start += 1
+        
+        j = 0
+        buf = bytearray(DELTA_STATE_SIZE)
+        self.mem_cpy(buf, 0, self._state, 0, self._delta)
+        i = start
+        while i < length:
+            j = 0
+            while j < self._delta and i < length:
+                buf[j] = data[i] = ((buf[j] & 0xFF) + (data[i] & 0xFF)) & 0xFF
+                i += 1
+                j += 1
+        if j == self._delta:
+            j = 0
+        self.mem_cpy(self._state, 0, buf, j, self._delta - j)
+        self.mem_cpy(self._state, self._delta - j, buf, 0, j)
+        return data[start:length-start]
         
     
 if __name__ == '__main__':
