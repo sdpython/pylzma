@@ -104,7 +104,7 @@ else:
     assert array('I').itemsize == 4
     ARRAY_TYPE_UINT32 = 'I'
 
-READ_BLOCKSIZE                   = 16384
+READ_BLOCKSIZE                   = 1024*16 # 16KB, Matches pylzma.h's BLOCK_SIZE is 128KB
 DELTA_STATE_SIZE                 = 256
 
 MAGIC_7Z                         = unhexlify('377abcaf271c')  # '7z\xbc\xaf\x27\x1c'
@@ -153,8 +153,8 @@ COMPRESSION_METHODS = {
 }
   
 #COMPRESSION_METHOD_MISC          = unhexlify('04')  # '\x04'
-COMPRESSION_METHOD_MISC_ZIP      = unhexlify('0401')  # '\x04\x01'
-COMPRESSION_METHOD_MISC_BZIP     = unhexlify('0402')  # '\x04\x02'
+#COMPRESSION_METHOD_MISC_ZIP      = unhexlify('0401')  # '\x04\x01'
+#COMPRESSION_METHOD_MISC_BZIP     = unhexlify('0402')  # '\x04\x02'
 #COMPRESSION_METHOD_CRYPTO        = unhexlify('06')  # '\x06'
 COMPRESSION_METHOD_7Z_AES256_SHA256 = unhexlify('06f10701') # '\x06\xf1\x07\x01'
 
@@ -651,9 +651,12 @@ class ArchiveFile(Base):
         if not input and total is None:
             remaining = self._start+size
             out = BytesIO()
-            cache = getattr(self._folder, '_decompress_cache', None)
+            cache = getattr(self._folder, ('_decompress_cache_%d' % level), None)
             if cache is not None:
                 data, pos, decompressor = cache
+                # Reset the max length in the decompressor as it was set to the old file being extracted.
+                if hasattr(decompressor, 'set_max_length'):
+                    decompressor.set_max_length(remaining)
                 out.write(data)
                 remaining -= len(data)
                 self._file.seek(pos)
@@ -675,7 +678,7 @@ class ArchiveFile(Base):
             if with_cache and self._folder.solid:
                 # don't decompress start of solid archive for next file
                 # TODO: limit size of cached data
-                self._folder._decompress_cache = (data, self._file.tell(), decompressor)
+                setattr(self._folder, ('_decompress_cache_%d' % level), (data, self._file.tell(), decompressor))
         else:
             if not input:
                 self._file.seek(self._src_start)

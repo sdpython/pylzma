@@ -77,6 +77,11 @@ pylzma_decomp_decompress(CDecompressionObject *self, PyObject *args)
     SizeT inProcessed, outProcessed;
     ELzmaStatus status;
     
+    // If we know the max size, lets not allocate more then we need to. This also fixes some archives where LzmaDec_DecodeToBuf errors due to the end of the input being weird....
+    if (self->max_length != -1 && self->max_length - self->total_out < bufsize)
+        bufsize = self->max_length - self->total_out;
+    //PySys_WriteStdout("Buf %x\n", bufsize);
+    
     if (!PyArg_ParseTuple(args, "s#|L", &data, &length, &bufsize)){
         return NULL;
     }
@@ -358,12 +363,39 @@ pylzma_decomp_reset(CDecompressionObject *self, PyObject *args, PyObject *kwargs
     return Py_None;
 }
 
+static const char
+doc_decomp_set_max_length[] = \
+    "set_max_length(maxlen) -- Changes the internal max_length variable to the specified value. Does NOT trim any internal buffers";
+
+static PyObject *
+pylzma_decomp_set_max_length(CDecompressionObject *self, PyObject *args)
+{
+    PY_LONG_LONG max_length = -1;
+    
+    if (!PyArg_ParseTuple(args, "L", &max_length))
+        return NULL;
+    
+    if (max_length == 0 || max_length < -1) {
+        PyErr_SetString(PyExc_ValueError, "the decompressed size must be greater than zero");
+        return NULL;
+    }
+    
+    if (self->max_length < max_length) {
+        PySys_WriteStdout("Set max len: %x -> %x\n", self->max_length, max_length);
+        self->max_length = max_length;
+    }
+    Py_INCREF(Py_None);
+    return Py_None;
+}
+
+
 
 static PyMethodDef
 pylzma_decomp_methods[] = {
-    {"decompress", (PyCFunction)pylzma_decomp_decompress, METH_VARARGS, (char *)&doc_decomp_decompress},
-    {"flush",      (PyCFunction)pylzma_decomp_flush,      METH_NOARGS,  (char *)&doc_decomp_flush},
-    {"reset",      (PyCFunction)pylzma_decomp_reset,      METH_VARARGS | METH_KEYWORDS, (char *)&doc_decomp_reset},
+    {"decompress",     (PyCFunction)pylzma_decomp_decompress,     METH_VARARGS, (char *)&doc_decomp_decompress},
+    {"flush",          (PyCFunction)pylzma_decomp_flush,          METH_NOARGS,  (char *)&doc_decomp_flush},
+    {"reset",          (PyCFunction)pylzma_decomp_reset,          METH_VARARGS | METH_KEYWORDS, (char *)&doc_decomp_reset},
+    {"set_max_length", (PyCFunction)pylzma_decomp_set_max_length, METH_VARARGS, (char *)&doc_decomp_set_max_length},
     {NULL},
 };
 
