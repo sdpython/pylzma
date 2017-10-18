@@ -381,7 +381,7 @@ pylzma_decomp_set_max_length(CDecompressionObject *self, PyObject *args)
     }
     
     if (self->max_length < max_length) {
-        PySys_WriteStdout("Set max len: %x -> %x\n", self->max_length, max_length);
+        //PySys_WriteStdout("Set max len: %x -> %x\n", self->max_length, max_length);
         self->max_length = max_length;
     }
     Py_INCREF(Py_None);
