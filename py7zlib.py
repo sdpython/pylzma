@@ -650,15 +650,17 @@ class ArchiveFile(Base):
         total = self.compressed
         if not input and total is None:
             remaining = self._start+size
-            out = BytesIO()
+            out = []
             cache = getattr(self._folder, ('_decompress_cache_%d' % level), None)
             if cache is not None:
                 data, pos, decompressor = cache
                 # Reset the max length in the decompressor as it was set to the old file being extracted.
                 if hasattr(decompressor, 'set_max_length'):
                     decompressor.set_max_length(remaining)
-                out.write(data)
                 remaining -= len(data)
+                if remaining <= 0: # Early exit if we have enough data
+                    return data
+                out.append(data)
                 self._file.seek(pos)
             else:
                 self._file.seek(self._src_start)
@@ -671,10 +673,10 @@ class ArchiveFile(Base):
                     tmp = decompressor.decompress(data)
                 if not tmp and not data:
                     raise DecompressionError('end of stream while decompressing')
-                out.write(tmp)
+                out.append(tmp)
                 remaining -= len(tmp)
             
-            data = out.getvalue()
+            data = ''.join(out)
             if with_cache and self._folder.solid:
                 # don't decompress start of solid archive for next file
                 # TODO: limit size of cached data
