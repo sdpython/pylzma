@@ -25,15 +25,16 @@
 
 #include <Python.h>
 
-#include "../sdk/7zVersion.h"
-#include "../7zip/C/Sha256.h"
-#include "../7zip/C/Aes.h"
-#include "../7zip/C/Bra.h"
+#include "../sdk/C/7zVersion.h"
+#include "../sdk/C/Sha256.h"
+#include "../sdk/C/Aes.h"
+#include "../sdk/C/Bra.h"
 
 #include "pylzma.h"
 #include "pylzma_compress.h"
 #include "pylzma_decompress.h"
 #include "pylzma_decompressobj.h"
+#include "pylzma_bcjdecobj.h"
 #if 0
 #include "pylzma_compressobj.h"
 #endif
@@ -244,6 +245,10 @@ initpylzma(void)
     CDecompressionObject_Type.tp_new = PyType_GenericNew;
     if (PyType_Ready(&CDecompressionObject_Type) < 0)
         RETURN_MODULE_ERROR;
+    
+    CBcjDecompressionObject_Type.tp_new = PyType_GenericNew;
+    if (PyType_Ready(&CBcjDecompressionObject_Type) < 0)
+        RETURN_MODULE_ERROR;
 #if 0
     CCompressionObject_Type.tp_new = PyType_GenericNew;
     if (PyType_Ready(&CCompressionObject_Type) < 0)
@@ -265,6 +270,8 @@ initpylzma(void)
 
     Py_INCREF(&CDecompressionObject_Type);
     PyModule_AddObject(m, "decompressobj", (PyObject *)&CDecompressionObject_Type);
+    Py_INCREF(&CBcjDecompressionObject_Type);
+    PyModule_AddObject(m, "bcjdecobj", (PyObject *)&CBcjDecompressionObject_Type);
 #if 0
     Py_INCREF(&CCompressionObject_Type);
     PyModule_AddObject(m, "compressobj", (PyObject *)&CCompressionObject_Type);

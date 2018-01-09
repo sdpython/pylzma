@@ -22,6 +22,8 @@
 #
 # $Id$
 #
+import sys
+sys.path.append('..')
 from datetime import datetime
 import errno
 import os
@@ -280,6 +282,16 @@ class Test7ZipFiles(unittest.TestCase):
         self.assertEqual(archive.header.files.numfiles, 1)
         self.assertEqual([x['filename'] for x in archive.header.files.files], [u'successs.txt'])
         cf = archive.getmember('successs.txt')
+        self.assertEqual(cf, None)
+
+    def test_github_41(self):
+        fp = self._open_file(os.path.join(ROOT, 'data', 'github_41.7z'), 'rb')
+        archive = Archive7z(fp)
+        # Also only an empty file (which gets filtered).
+        self.assertEqual(archive.getnames(), [])
+        self.assertEqual(archive.header.files.numfiles, 1)
+        self.assertEqual([x['filename'] for x in archive.header.files.files], [u'12313213.txt'])
+        cf = archive.getmember('12313213.txt')
         self.assertEqual(cf, None)
 
 def suite():

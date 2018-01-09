@@ -30,6 +30,8 @@ from datetime import datetime
 import pylzma
 from struct import pack, unpack
 from zlib import crc32
+from pprint import pprint
+from pprint import pformat
 import zlib
 import bz2
 import os
@@ -102,7 +104,8 @@ else:
     assert array('I').itemsize == 4
     ARRAY_TYPE_UINT32 = 'I'
 
-READ_BLOCKSIZE                   = 16384
+READ_BLOCKSIZE                   = 1024*16 # 16KB, Matches pylzma.h's BLOCK_SIZE is 128KB
+DELTA_STATE_SIZE                 = 256
 
 MAGIC_7Z                         = unhexlify('377abcaf271c')  # '7z\xbc\xaf\x27\x1c'
 
@@ -135,12 +138,37 @@ PROPERTY_DUMMY                   = unhexlify('19')  # '\x19'
 
 COMPRESSION_METHOD_COPY          = unhexlify('00')  # '\x00'
 COMPRESSION_METHOD_LZMA          = unhexlify('03')  # '\x03'
-COMPRESSION_METHOD_LZMA2         = b'!'
+COMPRESSION_METHOD_LZMA2         = b'!' # unhexlify('21')
 COMPRESSION_METHOD_CRYPTO        = unhexlify('06')  # '\x06'
 COMPRESSION_METHOD_MISC          = unhexlify('04')  # '\x04'
 COMPRESSION_METHOD_MISC_ZIP      = unhexlify('0401')  # '\x04\x01'
 COMPRESSION_METHOD_MISC_BZIP     = unhexlify('0402')  # '\x04\x02'
 COMPRESSION_METHOD_7Z_AES256_SHA256 = unhexlify('06f10701')  # '\x06\xf1\x07\x01'
+
+COMPRESSION_METHODS = {
+  COMPRESSION_METHOD_COPY:       'copy',
+  COMPRESSION_METHOD_LZMA2:      'lzma2',
+  COMPRESSION_METHOD_LZMA:       'delta',
+  unhexlify('030101'):   'lzma',
+  unhexlify('03030103'): 'bcj',
+  #unhexlify('0303011b'): 'bcj2',
+  #unhexlify('03030205'): 'ppc',
+  #unhexlify('03030401'): 'ia64',
+  #unhexlify('03030501'): 'arm',
+  #unhexlify('03030701'): 'armt',
+  #unhexlify('03030805'): 'sparc',
+  unhexlify('06f10701'): '7z_aes256_sha256',
+  '': ''
+}
+  
+"""
+#COMPRESSION_METHOD_MISC          = unhexlify('04')  # '\x04'
+#COMPRESSION_METHOD_MISC_ZIP      = unhexlify('0401')  # '\x04\x01'
+#COMPRESSION_METHOD_MISC_BZIP     = unhexlify('0402')  # '\x04\x02'
+#COMPRESSION_METHOD_CRYPTO        = unhexlify('06')  # '\x06'
+COMPRESSION_METHOD_7Z_AES256_SHA256 = unhexlify('06f10701') # '\x06\xf1\x07\x01'
+>>>>>>> 57163d5904a29702d334cea42a6436157d4de433
+"""
 
 # number of seconds between 1601/01/01 and 1970/01/01 (UTC)
 # used to adjust 7z FILETIME to Python timestamp
@@ -582,6 +610,7 @@ class ArchiveFile(Base):
             else:
                 self.filename = os.path.splitext(os.path.basename(basefilename))[0]
         self.reset()
+
         self._decoders = {
             COMPRESSION_METHOD_COPY: '_read_copy',
             COMPRESSION_METHOD_LZMA: '_read_lzma',
@@ -603,21 +632,25 @@ class ArchiveFile(Base):
         
         data = None
         level = 0
+        if len(self._folder.coders) > 1:
+            c = [x['method'] for x in self._folder.coders]
+            print ("  Multiple Coders: " + pformat(c))
+            
         for coder in self._folder.coders:
             method = coder['method']
-            decoder = None
-            while method and decoder is None:
-                decoder = self._decoders.get(method, None)
-                method = method[:-1]
+            decoder = COMPRESSION_METHODS.get(method, None)
             
             if decoder is None:
                 rows = ["{0}:{1}".format(k, v) for k, v in sorted(self._decoders.items())]
                 raise UnsupportedCompressionMethodError("Unsupported {0}-{1}. Available:\n{2}".format(repr(coder['method']), ord(coder['method']), "\n".join(rows)))
             
-            data = getattr(self, decoder)(coder, data, level)
+            data = getattr(self, '_read_' + decoder)(coder, data, level)
             level += 1
         
-        return data
+        if len(data) < self._start + self.size:
+            raise ValueError('Unable to compress full file data: Expected %x got %x' % (self._start + self.size, len(data)))
+        
+        return data[self._start:self._start+self.size]
     
     def _read_copy(self, coder, input, level):
         size = self._uncompressed[level]
@@ -633,36 +666,42 @@ class ArchiveFile(Base):
         cnt = 0
         properties = coder.get('properties', None)
         if properties:
+            #print('Properties: %s' % pformat(properties))
             decompressor.decompress(properties)
         total = self.compressed
         if not input and total is None:
             remaining = self._start+size
-            out = BytesIO()
-            cache = getattr(self._folder, '_decompress_cache', None)
+            out = []
+            cache = getattr(self._folder, ('_decompress_cache_%d' % level), None)
             if cache is not None:
                 data, pos, decompressor = cache
-                out.write(data)
+                # Reset the max length in the decompressor as it was set to the old file being extracted.
+                if hasattr(decompressor, 'set_max_length'):
+                    decompressor.set_max_length(remaining)
                 remaining -= len(data)
+                if remaining <= 0: # Early exit if we have enough data
+                    return data
+                out.append(data)
                 self._file.seek(pos)
             else:
                 self._file.seek(self._src_start)
             checkremaining = checkremaining and not self._folder.solid
             while remaining > 0:
                 data = self._file.read(READ_BLOCKSIZE)
-                if checkremaining or (with_cache and len(data) < READ_BLOCKSIZE):
+                if checkremaining or (with_cache and len(data) < READ_BLOCKSIZE) or remaining < len(data):
                     tmp = decompressor.decompress(data, remaining)
                 else:
                     tmp = decompressor.decompress(data)
                 if not tmp and not data:
                     raise DecompressionError('end of stream while decompressing')
-                out.write(tmp)
+                out.append(tmp)
                 remaining -= len(tmp)
             
-            data = out.getvalue()
+            data = ''.join(out)
             if with_cache and self._folder.solid:
                 # don't decompress start of solid archive for next file
                 # TODO: limit size of cached data
-                self._folder._decompress_cache = (data, self._file.tell(), decompressor)
+                setattr(self._folder, ('_decompress_cache_%d' % level), (data, self._file.tell(), decompressor))
         else:
             if not input:
                 self._file.seek(self._src_start)
@@ -671,7 +710,8 @@ class ArchiveFile(Base):
                 data = decompressor.decompress(input, self._start+size)
             else:
                 data = decompressor.decompress(input)
-        return data[self._start:self._start+size]
+        #print('Data: %x %x %x' % (self._start, size, len(data)))
+        return data
     
     def _read_lzma(self, coder, input, level):
         size = self._uncompressed[level]
@@ -681,11 +721,17 @@ class ArchiveFile(Base):
         except ValueError:
             if self._is_encrypted():
                 raise WrongPasswordError('invalid password')
-            
             raise
-        
+            
     def _read_lzma2(self, coder, input, level):
-        raise NotImplementedError('LZMA2 not available. Needs to be updated with the latest sources from 7z')
+        size = self._uncompressed[level]
+        dec = pylzma.decompressobj(maxlength=self._start+size, lzma2=1)
+        try:
+            return self._read_from_decompressor(coder, dec, input, level, checkremaining=True, with_cache=True)
+        except ValueError:
+            if self._is_encrypted():
+                raise WrongPasswordError('invalid password')
+            raise
         
     def _read_zip(self, coder, input, level):
         dec = zlib.decompressobj(-15)
@@ -695,6 +741,15 @@ class ArchiveFile(Base):
         dec = bz2.BZ2Decompressor()
         return self._read_from_decompressor(coder, dec, input, level)
     
+    def _read_bcj(self, coder, input, level):
+        dec = BCJDecoder()
+        return self._read_from_decompressor(coder, dec, input, level, checkremaining=True)
+        
+    def _read_delta(self, coder, input, level):
+        dec = DeltaDecoder()
+        return self._read_from_decompressor(coder, dec, input, level, checkremaining=True)
+        
+        
     def _read_7z_aes256_sha256(self, coder, input, level):
         if not self._archive.password:
             raise NoPasswordGivenError()
@@ -798,6 +853,7 @@ class Archive7z(Base):
                 info = {
                     'compressed': streams.packinfo.packsizes[0],
                     '_uncompressed': uncompressed,
+                    '_packsizes': streams.packinfo.packsizes
                 }
                 tmp = ArchiveFile(info, 0, src_start, folder, self)
                 uncompressed_size = uncompressed[-1]
@@ -866,6 +922,7 @@ class Archive7z(Base):
                 # file is not compressed
                 info['compressed'] = uncompressed
             info['_uncompressed'] = uncompressed
+            info['_packsizes'] = packinfo.packsizes
             file = ArchiveFile(info, pos, src_pos, folder, self, maxsize=maxsize)
             if subinfo.digestsdefined[obidx]:
                 file.digest = subinfo.digests[obidx]
@@ -913,7 +970,141 @@ class Archive7z(Base):
         for f in self.files:
             extra = (f.compressed and '%10d ' % (f.compressed)) or ' '
             file.write('%10d%s%.8x %s\n' % (f.size, extra, f.digest, f.filename))
+         
+# BCJ is a pre-processor for executables created by Igor Pavlov (7zip author) I THINK.
+# I have not been able to track down ANY actual docmentation on this. But I have been able to find some code.
+# From the look of it, it converts relative jumps in a EXE file into explicit calls. This helps create redundant data that other compression 
+# mechanics can exploit to make a smaller end file.
+# Converted from java: https://github.com/openlogic/j7zip-extractor/blob/master/src/SevenZip/Compression/Branch/BCJ_x86_Decoder.java         
+class BCJDecoder():
+    def __init__(self, arch='x86'):
+        self._prevMask = 0
+        self._prevPos = 0
+        self._bufferPos = 0
+        self._extra = None
+        self.kMaskToAllowedStatus = [True, True, True, False, True, False, False, False]
+        self.kMaskToBitNumber = [0, 1, 2, 2, 3, 3, 3, 3]
+        if 'x86' == arch:
+            self._prevMask = 0
+            self._prevPos = -5
             
+    def x86_Convert(self, buffer, endPos, nowPos, encoding):
+        def test86MSByte(b):
+            return b == 0 or b == 0xFF;
+        def rshift(val, n): # Python doesn't have logical shift..
+            return val >> n if val >= 0 else (val + 0x100000000) >> n
+            
+        bufferPos = 0
+        limit = 0
+        
+        if endPos < 5:
+            return 0
+            
+        if nowPos - self._prevPos > 5:
+            self._prevPos = nowPos - 5
+        
+        limit = endPos - 5
+        while bufferPos <= limit:
+            b = buffer[bufferPos] & 0xFF
+            
+            if b != 0xE8 and b != 0xE9: #CALL or JUMP
+                bufferPos += 1
+                continue
+                
+            offset = nowPos + bufferPos - self._prevPos
+            self._prevPos = nowPos + bufferPos
+            if offset > 5:
+                self._prevMask = 0
+            else:
+                for i in range(0, offset):
+                    self._prevMask &= 0x77
+                    self._prevMask <<= 1
+            
+            b = buffer[bufferPos + 4] & 0xFF
+            if test86MSByte(b) and self.kMaskToAllowedStatus[(self._prevMask >> 1) & 0x07] and rshift(self._prevMask, 1) < 0x10:
+                src = b << 24 | ((buffer[bufferPos + 3] & 0xFF) << 16) | ((buffer[bufferPos + 2] & 0xFF) << 8) | (buffer[bufferPos + 1] & 0xFF)
+                
+                dest = 0
+                while True:
+                    if encoding:
+                        dest = (nowPos + bufferPos + 5) + src
+                    else:
+                        dest = src - (nowPos + bufferPos + 5)
+                    if self._prevMask == 0:
+                        break
+                    index = self.kMaskToBitNumber[rshift(self._prevMask, 1)]
+                    b = (dest >> (24 - index * 8)) & 0xFF
+                    if not test86MSByte(b):
+                        break
+                    src = dest ^ ((1 << (32 - index * 8)) -1)
+                buffer[bufferPos + 4] = (~(((dest >> 24) & 1) - 1)) & 0xFF
+                buffer[bufferPos + 3] = (dest >> 16) & 0xFF
+                buffer[bufferPos + 2] = (dest >> 8) & 0xFF
+                buffer[bufferPos + 1] = dest & 0xFF
+                bufferPos += 5
+                self._prevMask = 0
+            else:
+                bufferPos += 1
+                self._prevMask |= 1
+                if test86MSByte(b):
+                    self._prevMask |= 0x10
+            
+        return bufferPos
+            
+    def decompress(self, data, size=READ_BLOCKSIZE):
+        data = bytearray(data)
+        #We are doing a second pass in this... we should never be called multiple times?
+        #Lets throw an error if we are.
+        if self._bufferPos > 0:
+            raise Exception('BCJ decoder called multiple times...')
+        #if not self._extra is None:
+        #    data = self._extra + data
+        #    size += len(self._extra)
+        #    self._extra = None
+        
+        processedSize = self.x86_Convert(data, size, self._bufferPos, False)
+        self._bufferPos += processedSize
+        #if processedSize < len(data):
+        #    self._extra = data[processedSize+1:]
+        return data #[:processedSize]
+        
+
+# Converted from the C code, may be a little bit slower but easier to writing the native bridge
+class DeltaDecoder():
+    def __init__(self):
+        self._state = bytearray(DELTA_STATE_SIZE)
+        self._delta = -1
+        
+    def mem_cpy(self, dest, dest_start, src, src_start, size):
+        for i in range(0, size):
+            dest[i + dest_start] = src[i + src_start]
+    
+    def decompress(self, data, size=READ_BLOCKSIZE):
+        data = bytearray(data)
+        length = len(data)
+        
+        start = 0
+        if self._delta == -1:
+            self._delta = (data[0] & 0xFF) + 1
+            start += 1
+        
+        j = 0
+        buf = bytearray(DELTA_STATE_SIZE)
+        self.mem_cpy(buf, 0, self._state, 0, self._delta)
+        i = start
+        while i < length:
+            j = 0
+            while j < self._delta and i < length:
+                buf[j] = data[i] = ((buf[j] & 0xFF) + (data[i] & 0xFF)) & 0xFF
+                i += 1
+                j += 1
+        if j == self._delta:
+            j = 0
+        self.mem_cpy(self._state, 0, buf, j, self._delta - j)
+        self.mem_cpy(self._state, self._delta - j, buf, 0, j)
+        return data[start:length-start]
+        
+    
 if __name__ == '__main__':
     f = Archive7z(open('test.7z', 'rb'))
     #f = Archive7z(open('pylzma.7z', 'rb'))

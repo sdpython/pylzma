@@ -28,17 +28,19 @@
 
 #include <Python.h>
 
-#include "../sdk/LzmaDec.h"
+#include "../sdk/C/Lzma2Dec.h"
 
 typedef struct {
     PyObject_HEAD
     CLzmaDec state;
+    CLzma2Dec state2;
     ELzmaStatus status;
     SizeT max_length;
     SizeT total_out;
     unsigned char *unconsumed_tail;
     SizeT unconsumed_length;
     int need_properties;
+    int lzma2;
 } CDecompressionObject;
 
 extern PyTypeObject CDecompressionObject_Type;

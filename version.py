@@ -49,6 +49,9 @@ def call_git_describe(abbrev=4):
         version = line.strip()
         if version[:1] in ('v', b'v'):
             version = version[1:]
+        version = version.replace(b'-', b'.').split(b'.')
+        version = b"-".join([b'.'.join(version[:-1]), version[-1]])
+        version = b'0.4.9.4'
         return version
 
     except:
