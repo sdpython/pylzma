@@ -47,7 +47,7 @@ def call_git_describe(abbrev=4):
         p.stderr.close()
         line = p.stdout.readlines()[0]
         version = line.strip()
-        if version[:1] == 'v':
+        if version[:1] in ('v', b'v'):
             version = version[1:]
         return version
 
